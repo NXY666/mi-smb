@@ -1,0 +1,27 @@
+{
+  "name": "@greatnxy/mi-smb",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "mi-smb": "index.js"
+  },
+  "scripts": {
+    "server": "node --openssl-legacy-provider index.js"
+  },
+  "keywords": [
+    "mi",
+    "smb",
+    "xiaoai"
+  ],
+  "author": "GreatNXY",
+  "license": "MIT",
+  "dependencies": {
+    "@greatnxy/smb2": "0.2.12",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "@types/express": "latest"
+  }
+}
