@@ -1,4 +1,4 @@
-#!/usr/bin/env node --openssl-legacy-provider
+#!/usr/bin/env -S node --openssl-legacy-provider
 
 import smb2 from "@greatnxy/smb2";
 import express from "express";
@@ -12,7 +12,7 @@ if (!argStr) {
 let LOC_HOST, LOC_PORT, SMB_SVR, SMB_SHARE;
 argStr.split(';').forEach((item) => {
 	const [key, value] = item.split('=');
-	eval(`${key} = '${value}';`);
+	eval(`${key} = ${value};`);
 });
 if (!LOC_HOST || !LOC_PORT || !SMB_SVR || !SMB_SHARE) {
 	// 当前参数（列出所有参数）
