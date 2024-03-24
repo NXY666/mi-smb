@@ -36,6 +36,38 @@ const opt = {
 // 用express搭建一个HTTP服务器，url规则为smb的路径
 const app = express();
 
+const history = {};
+const active = {};
+function recordHistory(ip, musicName) {
+	history[ip] = history[ip] ?? [];
+	// 去重
+	if (history[ip].includes(musicName)) {
+		history[ip].splice(history[ip].indexOf(musicName), 1);
+	}
+	history[ip].push(musicName);
+	if (history[ip].length > 10) {
+		history[ip].shift();
+	}
+}
+function getLastHistory(ip) {
+	return (history[ip] ?? []).pop();
+}
+function getAllHistory(ip) {
+	return history[ip] ?? [];
+}
+function recordPlayMusic(ip, musicName) {
+	if (active[ip]) {
+		recordStopMusic(ip);
+	}
+	active[ip] = musicName;
+}
+function recordStopMusic(ip) {
+	if (active[ip]) {
+		recordHistory(ip, active[ip]);
+	}
+	active[ip] = null;
+}
+
 app.get('/list', async (req, res) => {
 	console.log('[GET]', '/list');
 	const smb = new SMB(opt);
@@ -53,21 +85,27 @@ app.get('/list', async (req, res) => {
 	res.send(JSON.stringify(list));
 });
 
-app.get('/play/*', async (req, res) => {
-	let path = decodeURIComponent(req.url).replace(/^\/play\//, '');
-	console.log('[GET]', '/play', path);
+app.get('/play/:music', async (req, res) => {
+	const {music} = req.params;
+	console.log('[GET]', '/play', music);
+
+	// 记录播放
+	recordPlayMusic(req.ip, music);
 
 	const smb = new SMB(opt);
 
-	const smbStream = await smb.createReadStream(path);
+	const smbStream = await smb.createReadStream(music);
 	res.setHeader('Content-Type', 'audio/mp3');
 	smbStream.on('error', (err) => {
 		console.error('[Play]', 'Stream error:', err);
 		res.destroy();
 	});
 	res.on('close', () => {
-		console.log('[Play]', 'Response closed:', path);
+		console.log('[Play]', 'Response closed:', music);
 		smb.close();
+
+		// 记录停止
+		recordStopMusic(req.ip);
 	});
 	smbStream.pipe(res);
 });
@@ -84,6 +122,14 @@ app.get('/random.m3u8', async (req, res) => {
 	console.log('[GET]', '/random.m3u8');
 	const host = req.get('host');
 
+	const rawParams = req.query.params ?? '{}';
+	let params;
+	try {
+		params = JSON.parse(rawParams);
+	} catch (e) {
+		params = {};
+	}
+
 	// 随机生成一个M3U8文件，用play接口播放
 	const smb = new SMB(opt);
 	const fileNameList = await new Promise((resolve) => {
@@ -97,10 +143,38 @@ app.get('/random.m3u8', async (req, res) => {
 		});
 	});
 
-	// 如果有tips参数，则根据tips参数生成M3U8文件
-	const tips = req.query.tips;
+	let listCount = parseInt(params.list ?? "100");
+
+	// 生成M3U8文件
+	let m3u8Content = '#EXTM3U\n';
+	m3u8Content += "#EXT-X-VERSION:3\n";
+	m3u8Content += "#EXT-X-ALLOW-CACHE:NO\n";
+	m3u8Content += "#EXT-X-TARGETDURATION:3\n";
+
+	// 播放上次的歌或恢复刚刚的歌
+	if (params.last) {
+		// 没用
+		getLastHistory(req.ip);
+		// 有用
+		const lastMusic = getLastHistory(req.ip);
+		if (lastMusic && fileNameList.includes(lastMusic)) {
+			m3u8Content += `#EXTINF:3.000,${lastMusic}\n`;
+			m3u8Content += `http://${host}/play/${encodeURIComponent(lastMusic)}\n`;
+			listCount--;
+		}
+	} else if (params.restore) {
+		const activeMusic = getLastHistory(req.ip);
+		if (activeMusic && fileNameList.includes(activeMusic)) {
+			m3u8Content += `#EXTINF:3.000,${activeMusic}\n`;
+			m3u8Content += `http://${host}/play/${encodeURIComponent(activeMusic)}\n`;
+			listCount--;
+		}
+	}
+
+	// 根据提示加歌
 	let possibleFiles = [];
-	if (tips) {
+	if (params.tips) {
+		const tips = params.tips;
 		const fileList = fileNameList.map((fileName) => {
 			// questions
 			let [singers, name] = fileName.replace(/\.[a-z\d]+?$/i, '').split(' - ');
@@ -135,32 +209,45 @@ app.get('/random.m3u8', async (req, res) => {
 
 		// 随机排序
 		possibleFiles.sort(() => Math.random() - 0.5);
-	}
 
-	// 生成M3U8文件
-	let m3u8Content = '#EXTM3U\n';
-	m3u8Content += "#EXT-X-VERSION:3\n";
-	m3u8Content += "#EXT-X-ALLOW-CACHE:NO\n";
-	m3u8Content += "#EXT-X-TARGETDURATION:3\n";
-
-	// 加入可能性最高的文件
-	for (let file of possibleFiles) {
-		m3u8Content += `#EXTINF:3.000,${file.name}\n`;
-		m3u8Content += `http://${host}/play/${encodeURIComponent(file.name)}\n`;
-	}
-
-	// 不能重复播放
-	const fileNames = [];
-	for (let i = 0; i < 100 - possibleFiles.length; i++) {
-		const randomFileName = fileNameList[Math.floor(Math.random() * fileNameList.length)];
-		if (fileNames.includes(randomFileName)) {
-			i--;
-			continue;
+		// 加入可能性最高的歌
+		for (let file of possibleFiles) {
+			m3u8Content += `#EXTINF:3.000,${file.name}\n`;
+			m3u8Content += `http://${host}/play/${encodeURIComponent(file.name)}\n`;
+			listCount--;
 		}
-		fileNames.push(randomFileName);
-		m3u8Content += `#EXTINF:3.000,${randomFileName}\n`;
-		m3u8Content += `http://${host}/play/${encodeURIComponent(randomFileName)}\n`;
+
+		// 把可能性最高的歌从文件列表中移除
+		possibleFiles.forEach((item) => {
+			const index = fileNameList.indexOf(item.name);
+			if (index !== -1) {
+				fileNameList.splice(index, 1);
+			}
+		});
 	}
+
+	// 随机放入剩余的歌
+	const historyFiles = getAllHistory(req.ip);
+	while (listCount) {
+		// 没有文件了
+		if (fileNameList.length === 0) {
+			break;
+		}
+
+		const randomIndex = Math.floor(Math.random() * fileNameList.length);
+		const randomFileName = fileNameList[randomIndex];
+
+		// 不在历史记录中就加入
+		if (!historyFiles.includes(randomFileName)) {
+			m3u8Content += `#EXTINF:3.000,${randomFileName}\n`;
+			m3u8Content += `http://${host}/play/${encodeURIComponent(randomFileName)}\n`;
+			listCount--;
+		}
+
+		// 从文件列表中移除
+		fileNameList.splice(randomIndex, 1);
+	}
+
 	m3u8Content += "#EXT-X-ENDLIST\n";
 
 	res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
